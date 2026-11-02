@@ -93,6 +93,14 @@ _VIDEOS_MANIFEST_URL = f"https://{_VIDEOS_BUCKET}.s3.{_VIDEOS_REGION}.amazonaws.
 _VIDEOS_LOCK = threading.Lock()
 
 
+def _resolve_video_tools() -> tuple[str, str, str]:
+    yt_dlp = shutil.which("yt-dlp") or r"C:\Users\User\Documents\SOVHQDawnload\Ytdlp\yt-dlp.exe"
+    ffmpeg_bin_dir = Path(r"C:\Users\User\Documents\SOVHQDawnload\ffmpeg-7.1.1-essentials_build\ffmpeg-7.1.1-essentials_build\bin")
+    ffmpeg = shutil.which("ffmpeg") or str(ffmpeg_bin_dir / "ffmpeg.exe")
+    ffprobe = shutil.which("ffprobe") or str(ffmpeg_bin_dir / "ffprobe.exe")
+    return yt_dlp, ffmpeg, ffprobe
+
+
 def _fetch_videos_manifest() -> dict[str, Any]:
     import subprocess
     import urllib.request
@@ -115,6 +123,40 @@ def _fetch_videos_manifest() -> dict[str, Any]:
         return json.loads(resp.read().decode("utf-8"))
 
 
+def _save_videos_manifest(manifest: dict[str, Any]) -> None:
+    import subprocess
+    import tempfile
+
+    with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False, encoding="utf-8") as tmp:
+        json.dump(manifest, tmp, indent=2, ensure_ascii=False)
+        tmp_path = Path(tmp.name)
+
+    try:
+        up = subprocess.run(
+            [
+                "aws",
+                "s3",
+                "cp",
+                str(tmp_path),
+                f"s3://{_VIDEOS_BUCKET}/manifest.json",
+                "--region",
+                _VIDEOS_REGION,
+                "--content-type",
+                "application/json",
+                "--cache-control",
+                "no-cache, no-store, must-revalidate",
+            ],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            timeout=20,
+        )
+        if up.returncode != 0:
+            raise RuntimeError(up.stderr.strip() or "aws s3 cp failed")
+    finally:
+        tmp_path.unlink(missing_ok=True)
+
+
 @app.get("/api/videos")
 def api_get_videos() -> dict[str, Any]:
     try:
@@ -123,10 +165,378 @@ def api_get_videos() -> dict[str, Any]:
         raise HTTPException(status_code=502, detail=f"Failed to fetch videos manifest: {exc}")
 
 
+class UpdateVideoPayload(BaseModel):
+    favourite: bool | None = None
+    title: str | None = None
+    tag: str | None = None
+
+
+@app.patch("/api/videos/{video_id}")
+def api_update_video(video_id: str, payload: UpdateVideoPayload) -> dict[str, Any]:
+    with _VIDEOS_LOCK:
+        try:
+            manifest = _fetch_videos_manifest()
+        except Exception as exc:
+            raise HTTPException(status_code=502, detail=f"Failed to load videos manifest: {exc}")
+
+        videos = manifest.get("videos", [])
+        if not isinstance(videos, list):
+            videos = []
+
+        target = next((v for v in videos if v.get("id") == video_id), None)
+        if not target:
+            raise HTTPException(status_code=404, detail=f"Video '{video_id}' not found")
+
+        if payload.favourite is not None:
+            target["favourite"] = bool(payload.favourite)
+        if payload.title is not None and payload.title.strip():
+            target["title"] = payload.title.strip()
+        if payload.tag is not None:
+            clean_tag = payload.tag.strip()
+            if clean_tag:
+                target["tag"] = clean_tag
+            else:
+                target.pop("tag", None)
+
+        try:
+            _save_videos_manifest(manifest)
+        except Exception as exc:
+            raise HTTPException(status_code=500, detail=f"Failed to save manifest to S3: {exc}")
+
+        return target
+
+
+class AddVideoPayload(BaseModel):
+    url: str
+    title: str | None = None
+    tag: str | None = None
+    startTime: str | None = None
+    endTime: str | None = None
+
+
+@app.post("/api/videos")
+def api_add_video(payload: AddVideoPayload) -> dict[str, Any]:
+    import re
+    import subprocess
+    import tempfile
+
+    source_url = payload.url.strip()
+    if not source_url:
+        raise HTTPException(status_code=400, detail="Video URL is required")
+
+    yt_dlp, ffmpeg, ffprobe = _resolve_video_tools()
+    if not Path(yt_dlp).exists() and not shutil.which(yt_dlp):
+        raise HTTPException(status_code=500, detail=f"yt-dlp not found at {yt_dlp}")
+    if not Path(ffmpeg).exists() and not shutil.which(ffmpeg):
+        raise HTTPException(status_code=500, detail=f"ffmpeg not found at {ffmpeg}")
+
+    ffmpeg_dir = str(Path(ffmpeg).resolve().parent)
+
+    with tempfile.TemporaryDirectory(prefix="careeros_video_") as tmpdir_str:
+        tmpdir = Path(tmpdir_str)
+
+        # 1. Inspect metadata via yt-dlp --dump-json
+        meta_proc = subprocess.run(
+            [yt_dlp, "--dump-json", "--no-playlist", source_url],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            timeout=90,
+        )
+        if meta_proc.returncode != 0:
+            err_msg = (meta_proc.stderr or meta_proc.stdout or "yt-dlp failed").strip().splitlines()[-1]
+            raise HTTPException(status_code=400, detail=f"Could not read video link: {err_msg}")
+
+        first_json_line = next((line for line in meta_proc.stdout.splitlines() if line.strip().startswith("{")), "")
+        info = json.loads(first_json_line) if first_json_line else {}
+
+        raw_id = str(info.get("id") or uuid.uuid4().hex[:11])
+        extractor = str(info.get("extractor_key") or info.get("extractor") or "").lower()
+        if "linkedin" in extractor or "linkedin.com" in source_url.lower():
+            if not raw_id.startswith("li_"):
+                raw_id = f"li_{raw_id}"
+
+        safe_id = re.sub(r"[^A-Za-z0-9_-]", "_", raw_id).strip("_") or uuid.uuid4().hex[:11]
+        start_time = (payload.startTime or "").strip()
+        end_time = (payload.endTime or "").strip()
+        if start_time or end_time:
+            clip_slug = re.sub(r"[^A-Za-z0-9]", "", f"{start_time}_{end_time}")
+            if clip_slug:
+                safe_id = f"{safe_id}_{clip_slug}"
+
+        detected_title = str(info.get("title") or safe_id).strip()
+        final_title = (payload.title or "").strip() or detected_title
+        if (start_time or end_time) and not (payload.title or "").strip():
+            clip_label = f"{start_time or '0:00'}-{end_time or 'end'}"
+            final_title = f"{final_title} (clip {clip_label})"
+
+        # 2. Download video + thumbnail via yt-dlp
+        dl_template = str(tmpdir / "raw.%(ext)s")
+        dl_cmd = [
+            yt_dlp,
+            "--no-playlist",
+            "--ffmpeg-location",
+            ffmpeg_dir,
+            "-f",
+            "bestvideo[vcodec^=avc1][height<=1080]+bestaudio[acodec^=mp4a]/best[vcodec^=avc1][height<=1080]/best[ext=mp4]/best",
+            "--merge-output-format",
+            "mp4",
+            "--write-thumbnail",
+            "--convert-thumbnails",
+            "jpg",
+            "-o",
+            dl_template,
+            source_url,
+        ]
+        dl_proc = subprocess.run(
+            dl_cmd,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            timeout=600,
+        )
+        if dl_proc.returncode != 0:
+            err_msg = (dl_proc.stderr or dl_proc.stdout or "Video download failed").strip().splitlines()[-1]
+            raise HTTPException(status_code=500, detail=f"Video download failed: {err_msg}")
+
+        downloaded_video = next(
+            (p for p in tmpdir.glob("raw.*") if p.suffix.lower() in {".mp4", ".mkv", ".webm", ".mov"}),
+            None,
+        )
+        if not downloaded_video or not downloaded_video.exists():
+            raise HTTPException(status_code=500, detail="Downloaded video file not found")
+
+        # 3. Process / trim / faststart video with ffmpeg
+        final_mp4 = tmpdir / f"{safe_id}.mp4"
+        if start_time or end_time:
+            ff_cmd = [ffmpeg, "-y"]
+            if start_time:
+                ff_cmd += ["-ss", start_time]
+            if end_time:
+                ff_cmd += ["-to", end_time]
+            ff_cmd += [
+                "-i",
+                str(downloaded_video),
+                "-c:v",
+                "libx264",
+                "-preset",
+                "veryfast",
+                "-crf",
+                "22",
+                "-c:a",
+                "aac",
+                "-movflags",
+                "+faststart",
+                str(final_mp4),
+            ]
+        else:
+            # Check video codec via ffprobe; copy if already h264, otherwise transcode to h264
+            codec_proc = subprocess.run(
+                [
+                    ffprobe,
+                    "-v",
+                    "error",
+                    "-select_streams",
+                    "v:0",
+                    "-show_entries",
+                    "stream=codec_name",
+                    "-of",
+                    "default=noprint_wrappers=1:nokey=1",
+                    str(downloaded_video),
+                ],
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                timeout=30,
+            )
+            vcodec = codec_proc.stdout.strip().lower()
+            if vcodec == "h264" and downloaded_video.suffix.lower() == ".mp4":
+                ff_cmd = [
+                    ffmpeg,
+                    "-y",
+                    "-i",
+                    str(downloaded_video),
+                    "-c",
+                    "copy",
+                    "-movflags",
+                    "+faststart",
+                    str(final_mp4),
+                ]
+            else:
+                ff_cmd = [
+                    ffmpeg,
+                    "-y",
+                    "-i",
+                    str(downloaded_video),
+                    "-c:v",
+                    "libx264",
+                    "-preset",
+                    "veryfast",
+                    "-crf",
+                    "23",
+                    "-c:a",
+                    "aac",
+                    "-movflags",
+                    "+faststart",
+                    str(final_mp4),
+                ]
+
+        ff_proc = subprocess.run(ff_cmd, capture_output=True, text=True, encoding="utf-8", timeout=600)
+        if ff_proc.returncode != 0 or not final_mp4.exists():
+            raise HTTPException(status_code=500, detail="ffmpeg failed to process video")
+
+        # 4. Probe exact duration via ffprobe
+        dur_proc = subprocess.run(
+            [
+                ffprobe,
+                "-v",
+                "error",
+                "-show_entries",
+                "format=duration",
+                "-of",
+                "default=noprint_wrappers=1:nokey=1",
+                str(final_mp4),
+            ],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            timeout=30,
+        )
+        try:
+            duration_seconds = round(float(dur_proc.stdout.strip()), 2)
+        except Exception:
+            duration_seconds = round(float(info.get("duration") or 0.0), 2)
+
+        # 5. Prepare thumbnail JPG via ffmpeg (either from yt-dlp thumbnail or extracted video frame)
+        final_thumb = tmpdir / f"{safe_id}.jpg"
+        raw_thumb = next(
+            (p for p in tmpdir.glob("raw.*") if p.suffix.lower() in {".jpg", ".jpeg", ".png", ".webp"}),
+            None,
+        )
+        if raw_thumb and raw_thumb.exists() and not (start_time or end_time):
+            subprocess.run(
+                [
+                    ffmpeg,
+                    "-y",
+                    "-i",
+                    str(raw_thumb),
+                    "-vf",
+                    "scale='min(1280,iw)':-2",
+                    "-q:v",
+                    "2",
+                    str(final_thumb),
+                ],
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                timeout=30,
+            )
+
+        if not final_thumb.exists() or final_thumb.stat().st_size == 0:
+            seek_sec = min(2.0, max(0.0, duration_seconds * 0.15))
+            subprocess.run(
+                [
+                    ffmpeg,
+                    "-y",
+                    "-ss",
+                    f"{seek_sec:.2f}",
+                    "-i",
+                    str(final_mp4),
+                    "-frames:v",
+                    "1",
+                    "-vf",
+                    "scale='min(1280,iw)':-2",
+                    "-q:v",
+                    "2",
+                    str(final_thumb),
+                ],
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                timeout=30,
+            )
+
+        if not final_thumb.exists():
+            raise HTTPException(status_code=500, detail="ffmpeg failed to generate thumbnail image")
+
+        # 6. Upload MP4 and Thumbnail JPG to S3
+        video_key = f"videos/{safe_id}.mp4"
+        thumb_key = f"thumbnails/{safe_id}.jpg"
+
+        up_vid = subprocess.run(
+            [
+                "aws",
+                "s3",
+                "cp",
+                str(final_mp4),
+                f"s3://{_VIDEOS_BUCKET}/{video_key}",
+                "--region",
+                _VIDEOS_REGION,
+                "--content-type",
+                "video/mp4",
+            ],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            timeout=300,
+        )
+        if up_vid.returncode != 0:
+            raise HTTPException(status_code=500, detail=f"Failed to upload video to S3: {up_vid.stderr.strip()}")
+
+        up_thumb = subprocess.run(
+            [
+                "aws",
+                "s3",
+                "cp",
+                str(final_thumb),
+                f"s3://{_VIDEOS_BUCKET}/{thumb_key}",
+                "--region",
+                _VIDEOS_REGION,
+                "--content-type",
+                "image/jpeg",
+            ],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            timeout=60,
+        )
+        if up_thumb.returncode != 0:
+            raise HTTPException(status_code=500, detail=f"Failed to upload thumbnail to S3: {up_thumb.stderr.strip()}")
+
+        # 7. Update manifest.json in S3
+        new_entry: dict[str, Any] = {
+            "id": safe_id,
+            "title": final_title,
+            "durationSeconds": duration_seconds,
+            "videoKey": video_key,
+            "thumbnailKey": thumb_key,
+            "sourceUrl": source_url,
+            "addedAt": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        }
+        clean_tag = (payload.tag or "").strip()
+        if clean_tag:
+            new_entry["tag"] = clean_tag
+
+        with _VIDEOS_LOCK:
+            manifest = _fetch_videos_manifest()
+            videos = manifest.get("videos", [])
+            if not isinstance(videos, list):
+                videos = []
+            # Preserve favourite flag if overwriting same id
+            existing = next((v for v in videos if v.get("id") == safe_id), None)
+            if existing and existing.get("favourite"):
+                new_entry["favourite"] = True
+            videos = [v for v in videos if v.get("id") != safe_id]
+            videos.insert(0, new_entry)
+            manifest["videos"] = videos
+            _save_videos_manifest(manifest)
+
+        return new_entry
+
+
 @app.delete("/api/videos/{video_id}")
 def api_delete_video(video_id: str) -> dict[str, Any]:
     import subprocess
-    import tempfile
 
     with _VIDEOS_LOCK:
         try:
@@ -145,36 +555,10 @@ def api_delete_video(video_id: str) -> dict[str, Any]:
         remaining = [v for v in videos if v.get("id") != video_id]
         manifest["videos"] = remaining
 
-        with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False, encoding="utf-8") as tmp:
-            json.dump(manifest, tmp, indent=2, ensure_ascii=False)
-            tmp_path = Path(tmp.name)
-
         try:
-            up = subprocess.run(
-                [
-                    "aws",
-                    "s3",
-                    "cp",
-                    str(tmp_path),
-                    f"s3://{_VIDEOS_BUCKET}/manifest.json",
-                    "--region",
-                    _VIDEOS_REGION,
-                    "--content-type",
-                    "application/json",
-                    "--cache-control",
-                    "no-cache, no-store, must-revalidate",
-                ],
-                capture_output=True,
-                text=True,
-                encoding="utf-8",
-                timeout=20,
-            )
-            if up.returncode != 0:
-                raise RuntimeError(up.stderr.strip() or "aws s3 cp failed")
+            _save_videos_manifest(manifest)
         except Exception as exc:
             raise HTTPException(status_code=500, detail=f"Failed to update manifest in S3: {exc}")
-        finally:
-            tmp_path.unlink(missing_ok=True)
 
         for key_field in ("videoKey", "thumbnailKey"):
             obj_key = (target.get(key_field) or "").strip().lstrip("/")
@@ -188,6 +572,7 @@ def api_delete_video(video_id: str) -> dict[str, Any]:
                 )
 
         return {"deleted": True, "id": video_id, "remainingCount": len(remaining)}
+
 
 
 

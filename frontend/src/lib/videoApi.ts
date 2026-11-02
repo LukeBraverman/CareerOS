@@ -53,3 +53,57 @@ export async function deleteVideo(videoId: string): Promise<void> {
   }
 }
 
+/** Updates a video's favourite status in the S3 manifest. */
+export async function toggleFavouriteVideo(
+  videoId: string,
+  favourite: boolean
+): Promise<MotivationVideo> {
+  const response = await fetch(`/api/videos/${encodeURIComponent(videoId)}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ favourite }),
+  })
+  if (!response.ok) {
+    let detail = `HTTP ${response.status}`
+    try {
+      const errBody = (await response.json()) as { detail?: string }
+      if (errBody.detail) detail = errBody.detail
+    } catch {
+      // ignore json parse error
+    }
+    throw new Error(`Failed to update favourite: ${detail}`)
+  }
+  return (await response.json()) as MotivationVideo
+}
+
+export interface AddVideoRequest {
+  url: string
+  title?: string
+  tag?: string
+  startTime?: string
+  endTime?: string
+}
+
+/** Downloads a video link via yt-dlp + ffmpeg on the local backend and uploads MP4 + JPG thumbnail to S3. */
+export async function addVideoFromUrl(
+  payload: AddVideoRequest
+): Promise<MotivationVideo> {
+  const response = await fetch('/api/videos', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  })
+  if (!response.ok) {
+    let detail = `HTTP ${response.status}`
+    try {
+      const errBody = (await response.json()) as { detail?: string }
+      if (errBody.detail) detail = errBody.detail
+    } catch {
+      // ignore json parse error
+    }
+    throw new Error(detail)
+  }
+  return (await response.json()) as MotivationVideo
+}
+
+

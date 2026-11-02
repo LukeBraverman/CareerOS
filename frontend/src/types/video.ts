@@ -13,6 +13,8 @@ export interface MotivationVideo {
   sourceUrl?: string
   /** ISO timestamp the video was added to the library. */
   addedAt?: string
+  /** Whether this video is marked as a favourite. */
+  favourite?: boolean
 }
 
 /** Shape of manifest.json at the root of the videos bucket. */
