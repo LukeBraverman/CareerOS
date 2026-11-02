@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { Sidebar, type NavTab } from '@/components/Sidebar'
 import { TodayView } from '@/components/TodayView'
 import { SearchView } from '@/components/SearchView'
@@ -7,9 +7,16 @@ import { CultureView } from '@/components/CultureView'
 import { VideosView } from '@/components/VideosView'
 import { VoiceNotesView } from '@/components/VoiceNotesView'
 import { CreateReminderModal } from '@/components/CreateReminderModal'
+import { DesktopNotificationToasts } from '@/components/DesktopNotificationToasts'
 import { type TodayReminder } from '@/types/reminder'
 import { type SystemStatus } from '@/types/voiceNote'
 import { fetchSystemStatus } from '@/lib/voiceNoteApi'
+import { refreshTodayReminders } from '@/lib/reminderCache'
+import {
+  detectNewReminderPings,
+  fireNativeDesktopNotification,
+  type DesktopReminderPing,
+} from '@/lib/desktopNotifications'
 import { formatDate } from '@/lib/date'
 import { Menu } from 'lucide-react'
 
@@ -20,6 +27,14 @@ export function App() {
   const [todayReminders, setTodayReminders] = useState<TodayReminder[]>([])
   const [systemStatus, setSystemStatus] = useState<SystemStatus | null>(null)
 
+  // Background & manual reminder sync + desktop notification state
+  const [isRefreshingReminders, setIsRefreshingReminders] = useState(false)
+  const [lastSyncedAt, setLastSyncedAt] = useState<string | null>(null)
+  const [activePings, setActivePings] = useState<DesktopReminderPing[]>([])
+
+  const statusMapRef = useRef<Map<string, string>>(new Map())
+  const isFirstCheckRef = useRef(true)
+
   const refreshStatus = useCallback(() => {
     fetchSystemStatus()
       .then(setSystemStatus)
@@ -28,11 +43,54 @@ export function App() {
       })
   }, [])
 
+  const syncAndCheckReminders = useCallback(async () => {
+    setIsRefreshingReminders(true)
+    try {
+      const freshToday = await refreshTodayReminders()
+      setTodayReminders(freshToday)
+
+      const newPings = detectNewReminderPings(
+        freshToday,
+        statusMapRef.current,
+        isFirstCheckRef.current
+      )
+      isFirstCheckRef.current = false
+
+      if (newPings.length > 0) {
+        setActivePings((prev) => [...newPings, ...prev].slice(0, 8))
+        for (const ping of newPings) {
+          void fireNativeDesktopNotification(ping)
+        }
+      }
+
+      setLastSyncedAt(
+        new Date().toLocaleTimeString('en-GB', {
+          hour: '2-digit',
+          minute: '2-digit',
+          second: '2-digit',
+        })
+      )
+    } catch (err) {
+      console.warn('Background reminder sync error:', err)
+    } finally {
+      setIsRefreshingReminders(false)
+    }
+  }, [])
+
   useEffect(() => {
     refreshStatus()
-  }, [refreshStatus])
+    void syncAndCheckReminders()
+
+    // Auto-poll every 30 seconds in the background for due/delivered reminder pings
+    const interval = window.setInterval(() => {
+      void syncAndCheckReminders()
+    }, 30_000)
+
+    return () => window.clearInterval(interval)
+  }, [refreshStatus, syncAndCheckReminders])
 
   const handleReminderCreated = (newReminder: TodayReminder) => {
+    statusMapRef.current.set(newReminder.id, newReminder.status)
     const todayFormatted = formatDate(new Date())
     if (newReminder.date === todayFormatted) {
       setTodayReminders((prev) => {
@@ -53,6 +111,9 @@ export function App() {
         activeTab={activeTab}
         onTabChange={setActiveTab}
         onCreateReminder={() => setIsCreateModalOpen(true)}
+        onRefreshReminders={() => void syncAndCheckReminders()}
+        isRefreshingReminders={isRefreshingReminders}
+        lastSyncedAt={lastSyncedAt}
         systemStatus={systemStatus}
         isMobileOpen={isMobileOpen}
         onCloseMobile={() => setIsMobileOpen(false)}
@@ -95,6 +156,9 @@ export function App() {
             <TodayView
               reminders={todayReminders}
               onRemindersChange={setTodayReminders}
+              onRefresh={() => void syncAndCheckReminders()}
+              isRefreshing={isRefreshingReminders}
+              lastSyncedAt={lastSyncedAt}
             />
           )}
 
@@ -122,6 +186,15 @@ export function App() {
         isOpen={isCreateModalOpen}
         onClose={() => setIsCreateModalOpen(false)}
         onCreated={handleReminderCreated}
+      />
+
+      {/* Desktop Reminder Notification Toasts */}
+      <DesktopNotificationToasts
+        pings={activePings}
+        onDismiss={(id) =>
+          setActivePings((prev) => prev.filter((p) => p.id !== id))
+        }
+        onDismissAll={() => setActivePings([])}
       />
     </div>
   )

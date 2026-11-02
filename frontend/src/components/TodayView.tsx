@@ -1,5 +1,5 @@
 import { useState, useEffect, useMemo } from 'react'
-import { AlertCircle } from 'lucide-react'
+import { AlertCircle, RefreshCw } from 'lucide-react'
 import {
   type TodayReminder,
 } from '@/types/reminder'
@@ -14,11 +14,17 @@ import { formatDate } from '@/lib/date'
 export interface TodayViewProps {
   reminders?: TodayReminder[]
   onRemindersChange?: React.Dispatch<React.SetStateAction<TodayReminder[]>>
+  onRefresh?: () => void
+  isRefreshing?: boolean
+  lastSyncedAt?: string | null
 }
 
 export function TodayView({
   reminders: externalReminders,
   onRemindersChange,
+  onRefresh,
+  isRefreshing = false,
+  lastSyncedAt,
 }: TodayViewProps = {}) {
   const [internalReminders, setInternalReminders] = useState<TodayReminder[]>([])
   const reminders = externalReminders ?? internalReminders
@@ -134,7 +140,27 @@ export function TodayView({
           <h1 className="text-3xl font-bold tracking-tight text-white">
             Today
           </h1>
-          <div className="flex items-center gap-3">
+          <div className="flex items-center gap-2.5">
+            {onRefresh && (
+              <button
+                type="button"
+                onClick={onRefresh}
+                disabled={isRefreshing || isLoading}
+                className="inline-flex items-center gap-1.5 px-3 py-1 rounded-lg text-xs border bg-[#262422] border-[#383531] text-[#a8a59f] hover:text-white hover:bg-[#302e2a] transition-all duration-150 cursor-pointer disabled:opacity-50"
+                title={
+                  lastSyncedAt
+                    ? `Last synced at ${lastSyncedAt} (Auto-refreshes every 30s)`
+                    : 'Refresh today’s reminders & check notifications'
+                }
+              >
+                <RefreshCw
+                  className={`w-3.5 h-3.5 shrink-0 ${
+                    isRefreshing || isLoading ? 'animate-spin text-[#cc785c]' : ''
+                  }`}
+                />
+                <span>{isRefreshing ? 'Syncing…' : 'Refresh'}</span>
+              </button>
+            )}
             <button
               type="button"
               onClick={() => setShowImportantOnly((prev) => !prev)}
@@ -148,7 +174,7 @@ export function TodayView({
               <AlertCircle className="w-3.5 h-3.5 shrink-0" />
               <span>Important only</span>
             </button>
-            {isLoading && (
+            {isLoading && !isRefreshing && (
               <div className="flex items-center gap-2 text-xs text-[#cc785c] animate-in fade-in duration-200">
                 <span className="relative flex h-2 w-2">
                   <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-[#cc785c] opacity-75"></span>

@@ -266,6 +266,52 @@ export async function getTodayRemindersWithCache(): Promise<TodayReminder[]> {
 }
 
 /**
+ * Forces a fresh network fetch of the current month's reminders from the backend,
+ * updates both monthCache and yearCache (if loaded), and returns today's reminders.
+ */
+export async function refreshTodayReminders(): Promise<TodayReminder[]> {
+  const now = new Date()
+  const year = now.getFullYear()
+  const monthIndex = now.getMonth()
+  const monthName = FULL_MONTH_NAMES[monthIndex]
+  const monthKey = `${year}-${monthName.toLowerCase()}`
+  const todayFormatted = formatDate(now)
+
+  const rawReminders = await getRemindersForMonth(year, monthName)
+  const mapped = rawReminders.map(backendReminderToSearchReminder)
+  mapped.sort((a, b) => {
+    const dateA = parseDate(a.date)
+    const dateB = parseDate(b.date)
+    const timeA = dateA ? dateA.getTime() : 0
+    const timeB = dateB ? dateB.getTime() : 0
+    if (timeA !== timeB) return timeA - timeB
+    return a.time.localeCompare(b.time)
+  })
+
+  monthCache.set(monthKey, mapped)
+
+  const existingYear = yearCache.get(year)
+  if (existingYear !== undefined) {
+    const otherMonths = existingYear.filter((r) => {
+      const parsed = parseDate(r.date)
+      return !parsed || parsed.getFullYear() !== year || parsed.getMonth() !== monthIndex
+    })
+    const mergedYear = [...otherMonths, ...mapped]
+    mergedYear.sort((a, b) => {
+      const dateA = parseDate(a.date)
+      const dateB = parseDate(b.date)
+      const timeA = dateA ? dateA.getTime() : 0
+      const timeB = dateB ? dateB.getTime() : 0
+      if (timeA !== timeB) return timeA - timeB
+      return a.time.localeCompare(b.time)
+    })
+    yearCache.set(year, mergedYear)
+  }
+
+  return mapped.filter((r) => r.date === todayFormatted)
+}
+
+/**
  * Removes a reminder from all active in-memory caches.
  */
 export function removeReminderFromCache(id: string): void {

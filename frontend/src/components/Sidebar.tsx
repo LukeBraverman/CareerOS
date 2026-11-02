@@ -10,6 +10,7 @@ import {
   Cpu,
   CheckCircle2,
   AlertTriangle,
+  RefreshCw,
 } from 'lucide-react'
 import type { SystemStatus } from '@/types/voiceNote'
 
@@ -25,6 +26,9 @@ interface SidebarProps {
   activeTab: NavTab
   onTabChange: (tab: NavTab) => void
   onCreateReminder?: () => void
+  onRefreshReminders?: () => void
+  isRefreshingReminders?: boolean
+  lastSyncedAt?: string | null
   systemStatus?: SystemStatus | null
   isMobileOpen?: boolean
   onCloseMobile?: () => void
@@ -34,6 +38,9 @@ export function Sidebar({
   activeTab,
   onTabChange,
   onCreateReminder,
+  onRefreshReminders,
+  isRefreshingReminders = false,
+  lastSyncedAt,
   systemStatus,
   isMobileOpen = false,
   onCloseMobile,
@@ -74,7 +81,7 @@ export function Sidebar({
   const content = (
     <div className="h-full flex flex-col justify-between bg-[#1b1a18] text-[#f0ede6] select-none">
       <div>
-        {/* Top Header: Terracotta rounded square + CareerOS title + '+' button */}
+        {/* Top Header: Terracotta rounded square + CareerOS title + Refresh & '+' buttons */}
         <div className="flex items-center justify-between px-5 pt-6 pb-2">
           <div className="flex items-center gap-3">
             <div
@@ -86,7 +93,26 @@ export function Sidebar({
             </span>
           </div>
 
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-1.5">
+            {onRefreshReminders && (
+              <button
+                type="button"
+                onClick={onRefreshReminders}
+                disabled={isRefreshingReminders}
+                className="p-1.5 rounded-lg border border-[#2e2c29] bg-[#22201e] hover:bg-[#2c2a27] text-[#c2bfb8] hover:text-white transition-colors cursor-pointer disabled:opacity-50"
+                aria-label="Refresh reminders & notifications"
+                title={
+                  lastSyncedAt
+                    ? `Refresh reminders (Last synced ${lastSyncedAt} · Auto-syncs every 30s)`
+                    : 'Refresh reminders (Auto-syncs every 30s)'
+                }
+              >
+                <RefreshCw
+                  className={`h-4 w-4 ${isRefreshingReminders ? 'animate-spin text-[#cc785c]' : ''}`}
+                />
+              </button>
+            )}
+
             {onCreateReminder && (
               <button
                 type="button"

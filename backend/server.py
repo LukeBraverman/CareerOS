@@ -87,6 +87,38 @@ def api_active_job() -> dict[str, Any]:
     return {"activeJob": _ACTIVE_JOB}
 
 
+class DesktopNotifyPayload(BaseModel):
+    title: str
+    message: str
+
+
+@app.post("/api/notify")
+def api_notify(payload: DesktopNotifyPayload) -> dict[str, bool]:
+    import subprocess
+    import xml.sax.saxutils as saxutils
+
+    safe_title = saxutils.escape(payload.title).replace("'", "''")
+    safe_msg = saxutils.escape(payload.message).replace("'", "''")
+    ps_script = (
+        "[Windows.UI.Notifications.ToastNotificationManager, Windows.UI.Notifications, ContentType = WindowsRuntime] | Out-Null; "
+        "[Windows.Data.Xml.Dom.XmlDocument, Windows.Data.Xml.Dom.XmlDocument, ContentType = WindowsRuntime] | Out-Null; "
+        f"$xmlStr = '<toast><visual><binding template=\"ToastGeneric\"><text>{safe_title}</text><text>{safe_msg}</text></binding></visual></toast>'; "
+        "$xml = New-Object Windows.Data.Xml.Dom.XmlDocument; "
+        "$xml.LoadXml($xmlStr); "
+        "$toast = [Windows.UI.Notifications.ToastNotification]::new($xml); "
+        "[Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier('CareerOS').Show($toast)"
+    )
+    threading.Thread(
+        target=lambda: subprocess.run(
+            ["powershell", "-NoProfile", "-WindowStyle", "Hidden", "-Command", ps_script],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        ),
+        daemon=True,
+    ).start()
+    return {"notified": True}
+
+
 @app.get("/api/history")
 def api_get_history() -> list[dict[str, Any]]:
     with _HISTORY_LOCK:
