@@ -87,6 +87,19 @@ def api_active_job() -> dict[str, Any]:
     return {"activeJob": _ACTIVE_JOB}
 
 
+@app.get("/api/videos")
+def api_get_videos() -> dict[str, Any]:
+    import urllib.request
+
+    url = "https://meinc-motivation-videos-027939434555.s3.eu-west-2.amazonaws.com/manifest.json"
+    try:
+        req = urllib.request.Request(url, headers={"Cache-Control": "no-cache"})
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            return json.loads(resp.read().decode("utf-8"))
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"Failed to fetch videos manifest: {exc}")
+
+
 class DesktopNotifyPayload(BaseModel):
     title: str
     message: str
