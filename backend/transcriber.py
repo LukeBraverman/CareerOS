@@ -143,7 +143,7 @@ def get_pyannote_pipeline(token: str, device: torch.device):
             # gives a ~5x speedup on CPU while preserving speaker turn accuracy.
             if device.type == "cpu":
                 for attr, val in (
-                    ("segmentation_step", 0.5),
+                    ("segmentation_step", 0.85),
                     ("segmentation_batch_size", 8),
                     ("embedding_batch_size", 8),
                 ):

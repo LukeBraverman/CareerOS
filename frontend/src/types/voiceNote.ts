@@ -1,5 +1,15 @@
 export type WhisperModelSize = 'tiny' | 'base' | 'small' | 'medium' | 'large-v3'
 
+export interface ActiveJobState {
+  jobId: string
+  fileName: string
+  stage: 'converting' | 'diarizing' | 'transcribing' | 'aligning' | 'complete'
+  message: string
+  percent: number
+  elapsedSeconds: number
+  logs: string[]
+}
+
 export interface SystemStatus {
   platform: string
   pyannoteDevice: string
@@ -9,6 +19,7 @@ export interface SystemStatus {
   hfTokenConfigured: boolean
   cachedWhisperModels: string[]
   pyannoteCached: boolean
+  activeJob?: ActiveJobState | null
 }
 
 export interface TranscriptSegment {

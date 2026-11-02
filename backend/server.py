@@ -37,6 +37,7 @@ AUDIO_DIR.mkdir(parents=True, exist_ok=True)
 TRANSCRIPTS_DIR.mkdir(parents=True, exist_ok=True)
 
 _HISTORY_LOCK = threading.Lock()
+_ACTIVE_JOB: dict[str, Any] | None = None
 
 
 def _load_history() -> list[dict[str, Any]]:
@@ -76,7 +77,14 @@ app.add_middleware(
 
 @app.get("/api/status")
 def api_status() -> dict[str, Any]:
-    return get_system_status()
+    status = get_system_status()
+    status["activeJob"] = _ACTIVE_JOB
+    return status
+
+
+@app.get("/api/active-job")
+def api_active_job() -> dict[str, Any]:
+    return {"activeJob": _ACTIVE_JOB}
 
 
 @app.get("/api/history")
@@ -183,10 +191,37 @@ async def api_transcribe(
     file_size_bytes = stored_audio_path.stat().st_size
     event_queue: queue.Queue[dict[str, Any] | None] = queue.Queue()
 
+    global _ACTIVE_JOB
+    _ACTIVE_JOB = {
+        "jobId": job_id,
+        "fileName": original_name,
+        "stage": "converting",
+        "message": f"Queued '{original_name}'...",
+        "percent": 4,
+        "elapsedSeconds": 0.0,
+        "logs": [f"Queued {original_name}"],
+    }
+
     def progress_callback(evt: dict[str, Any]):
+        global _ACTIVE_JOB
+        if _ACTIVE_JOB is not None:
+            logs = list(_ACTIVE_JOB.get("logs", []))
+            msg = evt.get("message", "")
+            if msg and (not logs or logs[-1] != msg):
+                logs = (logs + [msg])[-15:]
+            _ACTIVE_JOB = {
+                "jobId": job_id,
+                "fileName": original_name,
+                "stage": evt.get("stage", "transcribing"),
+                "message": msg,
+                "percent": evt.get("percent", 0),
+                "elapsedSeconds": evt.get("elapsedSeconds", 0.0),
+                "logs": logs,
+            }
         event_queue.put(evt)
 
     def worker():
+        global _ACTIVE_JOB
         try:
             result = transcribe_audio(
                 audio_path=stored_audio_path,
@@ -221,6 +256,7 @@ async def api_transcribe(
             stored_audio_path.unlink(missing_ok=True)
             event_queue.put({"type": "error", "message": str(exc)})
         finally:
+            _ACTIVE_JOB = None
             event_queue.put(None)
 
     threading.Thread(target=worker, daemon=True).start()

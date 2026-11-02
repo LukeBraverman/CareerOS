@@ -98,25 +98,51 @@ export function VoiceNotesView({ onStatusRefresh }: VoiceNotesViewProps) {
 
   useEffect(() => {
     let mounted = true
-    fetchVoiceNoteHistory()
-      .then((items) => {
+    const loadInitial = async () => {
+      try {
+        const items = await fetchVoiceNoteHistory()
         if (!mounted) return
         setHistory(items)
         if (items.length > 0) {
-          setActiveJob(items[0])
-          setSpeakerDrafts(items[0].speakerNames || {})
+          setActiveJob((prev) => prev || items[0])
+          setSpeakerDrafts((prev) =>
+            Object.keys(prev).length > 0 ? prev : items[0].speakerNames || {}
+          )
         }
-      })
-      .catch((err) => {
+      } catch (err) {
         if (mounted) {
           setError(err instanceof Error ? err.message : 'Failed to load history')
         }
-      })
-      .finally(() => {
+      } finally {
         if (mounted) setIsLoadingHistory(false)
-      })
+      }
+    }
+    void loadInitial()
+
+    // Poll every 3s so refreshing the window or switching tabs stays in sync with background jobs
+    const poll = window.setInterval(async () => {
+      if (!mounted) return
+      try {
+        const items = await fetchVoiceNoteHistory()
+        if (!mounted) return
+        setHistory((prev) => {
+          if (items.length !== prev.length || items[0]?.id !== prev[0]?.id) {
+            if (items.length > 0 && (!prev[0] || items[0].id !== prev[0].id)) {
+              setActiveJob(items[0])
+              setSpeakerDrafts(items[0].speakerNames || {})
+            }
+            return items
+          }
+          return prev
+        })
+      } catch {
+        // Ignore transient poll errors
+      }
+    }, 3000)
+
     return () => {
       mounted = false
+      window.clearInterval(poll)
     }
   }, [])
 
