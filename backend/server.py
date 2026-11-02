@@ -87,17 +87,108 @@ def api_active_job() -> dict[str, Any]:
     return {"activeJob": _ACTIVE_JOB}
 
 
-@app.get("/api/videos")
-def api_get_videos() -> dict[str, Any]:
+_VIDEOS_BUCKET = "meinc-motivation-videos-027939434555"
+_VIDEOS_REGION = "eu-west-2"
+_VIDEOS_MANIFEST_URL = f"https://{_VIDEOS_BUCKET}.s3.{_VIDEOS_REGION}.amazonaws.com/manifest.json"
+_VIDEOS_LOCK = threading.Lock()
+
+
+def _fetch_videos_manifest() -> dict[str, Any]:
+    import subprocess
     import urllib.request
 
-    url = "https://meinc-motivation-videos-027939434555.s3.eu-west-2.amazonaws.com/manifest.json"
     try:
-        req = urllib.request.Request(url, headers={"Cache-Control": "no-cache"})
-        with urllib.request.urlopen(req, timeout=10) as resp:
-            return json.loads(resp.read().decode("utf-8"))
+        proc = subprocess.run(
+            ["aws", "s3", "cp", f"s3://{_VIDEOS_BUCKET}/manifest.json", "-", "--region", _VIDEOS_REGION],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            timeout=12,
+        )
+        if proc.returncode == 0 and proc.stdout.strip():
+            return json.loads(proc.stdout)
+    except Exception:
+        pass
+
+    req = urllib.request.Request(_VIDEOS_MANIFEST_URL, headers={"Cache-Control": "no-cache"})
+    with urllib.request.urlopen(req, timeout=10) as resp:
+        return json.loads(resp.read().decode("utf-8"))
+
+
+@app.get("/api/videos")
+def api_get_videos() -> dict[str, Any]:
+    try:
+        return _fetch_videos_manifest()
     except Exception as exc:
         raise HTTPException(status_code=502, detail=f"Failed to fetch videos manifest: {exc}")
+
+
+@app.delete("/api/videos/{video_id}")
+def api_delete_video(video_id: str) -> dict[str, Any]:
+    import subprocess
+    import tempfile
+
+    with _VIDEOS_LOCK:
+        try:
+            manifest = _fetch_videos_manifest()
+        except Exception as exc:
+            raise HTTPException(status_code=502, detail=f"Failed to load videos manifest: {exc}")
+
+        videos = manifest.get("videos", [])
+        if not isinstance(videos, list):
+            videos = []
+
+        target = next((v for v in videos if v.get("id") == video_id), None)
+        if not target:
+            raise HTTPException(status_code=404, detail=f"Video '{video_id}' not found")
+
+        remaining = [v for v in videos if v.get("id") != video_id]
+        manifest["videos"] = remaining
+
+        with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False, encoding="utf-8") as tmp:
+            json.dump(manifest, tmp, indent=2, ensure_ascii=False)
+            tmp_path = Path(tmp.name)
+
+        try:
+            up = subprocess.run(
+                [
+                    "aws",
+                    "s3",
+                    "cp",
+                    str(tmp_path),
+                    f"s3://{_VIDEOS_BUCKET}/manifest.json",
+                    "--region",
+                    _VIDEOS_REGION,
+                    "--content-type",
+                    "application/json",
+                    "--cache-control",
+                    "no-cache, no-store, must-revalidate",
+                ],
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                timeout=20,
+            )
+            if up.returncode != 0:
+                raise RuntimeError(up.stderr.strip() or "aws s3 cp failed")
+        except Exception as exc:
+            raise HTTPException(status_code=500, detail=f"Failed to update manifest in S3: {exc}")
+        finally:
+            tmp_path.unlink(missing_ok=True)
+
+        for key_field in ("videoKey", "thumbnailKey"):
+            obj_key = (target.get(key_field) or "").strip().lstrip("/")
+            if obj_key:
+                subprocess.run(
+                    ["aws", "s3", "rm", f"s3://{_VIDEOS_BUCKET}/{obj_key}", "--region", _VIDEOS_REGION],
+                    capture_output=True,
+                    text=True,
+                    encoding="utf-8",
+                    timeout=20,
+                )
+
+        return {"deleted": True, "id": video_id, "remainingCount": len(remaining)}
+
 
 
 class DesktopNotifyPayload(BaseModel):

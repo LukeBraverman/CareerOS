@@ -35,3 +35,21 @@ export async function fetchVideos(): Promise<MotivationVideo[]> {
   const data = (await response.json()) as Partial<VideoManifest>
   return Array.isArray(data.videos) ? data.videos : []
 }
+
+/** Deletes a video from the S3 backend (manifest.json + video + thumbnail objects). */
+export async function deleteVideo(videoId: string): Promise<void> {
+  const response = await fetch(`/api/videos/${encodeURIComponent(videoId)}`, {
+    method: 'DELETE',
+  })
+  if (!response.ok) {
+    let detail = `HTTP ${response.status}`
+    try {
+      const errBody = (await response.json()) as { detail?: string }
+      if (errBody.detail) detail = errBody.detail
+    } catch {
+      // ignore json parse error
+    }
+    throw new Error(`Failed to delete video: ${detail}`)
+  }
+}
+
