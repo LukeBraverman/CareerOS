@@ -19,14 +19,12 @@ from typing import Callable, Any
 
 import soundfile as sf
 import torch
-from faster_whisper import WhisperModel
-from pyannote.audio import Pipeline
 
 os.environ["HF_HUB_DISABLE_SYMLINKS_WARNING"] = "1"
 
 # In-memory caches so models stay warm across transcriptions in the desktop session
 _MODEL_LOCK = threading.Lock()
-_WHISPER_CACHE: dict[tuple[str, str, str], WhisperModel] = {}
+_WHISPER_CACHE: dict[tuple[str, str, str], Any] = {}
 _PYANNOTE_CACHE: dict[tuple[str, str], Any] = {}
 
 
@@ -117,8 +115,10 @@ def load_waveform_tensor(wav_path: Path) -> tuple[torch.Tensor, int, float]:
     return waveform, sample_rate, duration
 
 
-def get_whisper_model(model_size: str, device: str, compute_type: str) -> WhisperModel:
+def get_whisper_model(model_size: str, device: str, compute_type: str) -> Any:
     """Load or retrieve cached faster-whisper model."""
+    from faster_whisper import WhisperModel
+
     key = (model_size, device, compute_type)
     with _MODEL_LOCK:
         if key not in _WHISPER_CACHE:
@@ -128,6 +128,8 @@ def get_whisper_model(model_size: str, device: str, compute_type: str) -> Whispe
 
 def get_pyannote_pipeline(token: str, device: torch.device):
     """Load or retrieve cached PyAnnote speaker diarization pipeline (supports pyannote 3.x and 4.x)."""
+    from pyannote.audio import Pipeline
+
     key = (token[:10], str(device))
     with _MODEL_LOCK:
         if key not in _PYANNOTE_CACHE:
