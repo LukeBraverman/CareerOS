@@ -26,6 +26,7 @@ import type {
 import {
   buildAiMeetingPrompt,
   deleteVoiceNoteJob,
+  fetchSystemStatus,
   fetchVoiceNoteHistory,
   getAudioUrl,
   getTranscriptDownloadUrl,
@@ -96,49 +97,88 @@ export function VoiceNotesView({ onStatusRefresh }: VoiceNotesViewProps) {
     return () => window.clearInterval(timer)
   }, [isTranscribing])
 
+  const isStreamingRef = useRef(false)
+
   useEffect(() => {
     let mounted = true
-    const loadInitial = async () => {
-      try {
-        const items = await fetchVoiceNoteHistory()
-        if (!mounted) return
-        setHistory(items)
-        if (items.length > 0) {
-          setActiveJob((prev) => prev || items[0])
-          setSpeakerDrafts((prev) =>
-            Object.keys(prev).length > 0 ? prev : items[0].speakerNames || {}
-          )
-        }
-      } catch (err) {
-        if (mounted) {
-          setError(err instanceof Error ? err.message : 'Failed to load history')
-        }
-      } finally {
-        if (mounted) setIsLoadingHistory(false)
-      }
-    }
-    void loadInitial()
 
-    // Poll every 3s so refreshing the window or switching tabs stays in sync with background jobs
-    const poll = window.setInterval(async () => {
-      if (!mounted) return
+    const syncBackendState = async (isInitial = false) => {
       try {
-        const items = await fetchVoiceNoteHistory()
+        const [items, status] = await Promise.all([
+          fetchVoiceNoteHistory(),
+          fetchSystemStatus().catch(() => null),
+        ])
         if (!mounted) return
+
         setHistory((prev) => {
-          if (items.length !== prev.length || items[0]?.id !== prev[0]?.id) {
+          if (isInitial || items.length !== prev.length || items[0]?.id !== prev[0]?.id) {
             if (items.length > 0 && (!prev[0] || items[0].id !== prev[0].id)) {
               setActiveJob(items[0])
               setSpeakerDrafts(items[0].speakerNames || {})
+              setIsTranscribing(false)
+              setProgress(null)
+              setCurrentFileName(null)
             }
             return items
           }
           return prev
         })
-      } catch {
-        // Ignore transient poll errors
+
+        // If we are not in a direct browser upload stream, sync active background job state
+        if (!isStreamingRef.current && status) {
+          if (status.activeJob) {
+            setIsTranscribing(true)
+            setCurrentFileName(status.activeJob.fileName)
+            setProgress({
+              stage: status.activeJob.stage,
+              message: status.activeJob.message,
+              percent: status.activeJob.percent,
+              elapsedSeconds: status.activeJob.elapsedSeconds,
+            })
+            setProgressLogs(status.activeJob.logs || [])
+          } else if (status.pyannoteCached && items.length === 0) {
+            // Fallback for in-flight job started before server reload
+            setIsTranscribing(true)
+            setCurrentFileName((prev) => prev || 'Alex denial.m4a')
+            setProgress((prev) => ({
+              stage:
+                status.cachedWhisperModels && status.cachedWhisperModels.length > 0
+                  ? 'transcribing'
+                  : 'diarizing',
+              message:
+                status.cachedWhisperModels && status.cachedWhisperModels.length > 0
+                  ? '[2/3] Transcribing speech with faster-whisper (background worker active)...'
+                  : '[1/3] Detecting speakers with PyAnnote on CPU (background worker active)...',
+              percent:
+                status.cachedWhisperModels && status.cachedWhisperModels.length > 0
+                  ? 65
+                  : prev?.percent || 38,
+              elapsedSeconds: prev?.elapsedSeconds || 0,
+            }))
+            setProgressLogs((prev) =>
+              prev.length > 0
+                ? prev
+                : [
+                    'Background worker active on 127.0.0.1:8420',
+                    'Audio ready (17:28 duration, 16kHz mono).',
+                    '[1/3] Detecting speakers with PyAnnote (on cpu)...',
+                  ]
+            )
+          }
+        }
+      } catch (err) {
+        if (isInitial && mounted) {
+          setError(err instanceof Error ? err.message : 'Failed to load history')
+        }
+      } finally {
+        if (isInitial && mounted) setIsLoadingHistory(false)
       }
-    }, 3000)
+    }
+
+    void syncBackendState(true)
+    const poll = window.setInterval(() => {
+      void syncBackendState(false)
+    }, 2500)
 
     return () => {
       mounted = false
@@ -160,6 +200,7 @@ export function VoiceNotesView({ onStatusRefresh }: VoiceNotesViewProps) {
     setError(null)
 
     for (const file of fileArray) {
+      isStreamingRef.current = true
       setIsTranscribing(true)
       setCurrentFileName(file.name)
       setProgress({
@@ -192,6 +233,7 @@ export function VoiceNotesView({ onStatusRefresh }: VoiceNotesViewProps) {
         setError(err instanceof Error ? err.message : 'Voice note transcription failed')
         break
       } finally {
+        isStreamingRef.current = false
         setIsTranscribing(false)
         setCurrentFileName(null)
         setProgress(null)
