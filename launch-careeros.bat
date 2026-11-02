@@ -3,7 +3,7 @@ setlocal
 cd /d "%~dp0"
 
 set "PORT=8420"
-set "URL=http://localhost:%PORT%"
+set "URL=http://127.0.0.1:%PORT%"
 
 :: Resolve Python interpreter (local venv -> shared MeInc venv -> system python)
 set "PYTHON_EXE="
