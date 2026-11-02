@@ -15,6 +15,7 @@ import { refreshTodayReminders } from '@/lib/reminderCache'
 import {
   detectNewReminderPings,
   fireNativeDesktopNotification,
+  updateDesktopAppBadge,
   type DesktopReminderPing,
 } from '@/lib/desktopNotifications'
 import { formatDate } from '@/lib/date'
@@ -31,9 +32,28 @@ export function App() {
   const [isRefreshingReminders, setIsRefreshingReminders] = useState(false)
   const [lastSyncedAt, setLastSyncedAt] = useState<string | null>(null)
   const [activePings, setActivePings] = useState<DesktopReminderPing[]>([])
+  const [unreadBadgeCount, setUnreadBadgeCount] = useState(0)
 
   const statusMapRef = useRef<Map<string, string>>(new Map())
   const isFirstCheckRef = useRef(true)
+
+  // Sync the window/taskbar icon badge whenever unreadBadgeCount changes
+  useEffect(() => {
+    updateDesktopAppBadge(unreadBadgeCount)
+  }, [unreadBadgeCount])
+
+  // Clear the desktop/taskbar icon badge as soon as the user clicks into or focuses the CareerOS window
+  useEffect(() => {
+    const clearBadgeOnInteract = () => {
+      setUnreadBadgeCount((prev) => (prev > 0 ? 0 : prev))
+    }
+    window.addEventListener('focus', clearBadgeOnInteract)
+    window.addEventListener('pointerdown', clearBadgeOnInteract)
+    return () => {
+      window.removeEventListener('focus', clearBadgeOnInteract)
+      window.removeEventListener('pointerdown', clearBadgeOnInteract)
+    }
+  }, [])
 
   const refreshStatus = useCallback(() => {
     fetchSystemStatus()
@@ -58,6 +78,7 @@ export function App() {
 
       if (newPings.length > 0) {
         setActivePings((prev) => [...newPings, ...prev].slice(0, 8))
+        setUnreadBadgeCount((prev) => prev + newPings.length)
         for (const ping of newPings) {
           void fireNativeDesktopNotification(ping)
         }
@@ -114,6 +135,7 @@ export function App() {
         onRefreshReminders={() => void syncAndCheckReminders()}
         isRefreshingReminders={isRefreshingReminders}
         lastSyncedAt={lastSyncedAt}
+        unreadPingCount={unreadBadgeCount || activePings.length}
         systemStatus={systemStatus}
         isMobileOpen={isMobileOpen}
         onCloseMobile={() => setIsMobileOpen(false)}
@@ -191,10 +213,14 @@ export function App() {
       {/* Desktop Reminder Notification Toasts */}
       <DesktopNotificationToasts
         pings={activePings}
-        onDismiss={(id) =>
+        onDismiss={(id) => {
           setActivePings((prev) => prev.filter((p) => p.id !== id))
-        }
-        onDismissAll={() => setActivePings([])}
+          setUnreadBadgeCount(0)
+        }}
+        onDismissAll={() => {
+          setActivePings([])
+          setUnreadBadgeCount(0)
+        }}
       />
     </div>
   )

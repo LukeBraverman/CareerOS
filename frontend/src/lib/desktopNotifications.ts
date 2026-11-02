@@ -2,6 +2,7 @@ import type { TodayReminder } from '@/types/reminder'
 
 const STORAGE_KEY = 'careeros_notified_reminder_ids_v1'
 const API_BASE = import.meta.env.VITE_API_BASE_URL || ''
+const DEFAULT_TITLE = 'CareerOS — Desktop Suite'
 
 export interface DesktopReminderPing {
   id: string
@@ -38,11 +39,99 @@ function saveNotifiedSet(ids: Set<string>): void {
 }
 
 /**
+ * Dynamically draws the CareerOS app icon (64x64) with an optional red unread notification badge
+ * and updates the window/taskbar icon, Web Badging API, and document title.
+ */
+export function updateDesktopAppBadge(unreadCount: number): void {
+  try {
+    // 1. Update document title
+    if (unreadCount > 0) {
+      document.title = `🔴 (${unreadCount}) Reminder — CareerOS`
+    } else {
+      document.title = DEFAULT_TITLE
+    }
+
+    // 2. Web App Badging API (supported by Edge/Chrome --app mode on Windows)
+    const nav = navigator as Navigator & {
+      setAppBadge?: (count?: number) => Promise<void>
+      clearAppBadge?: () => Promise<void>
+    }
+    if (unreadCount > 0 && typeof nav.setAppBadge === 'function') {
+      void nav.setAppBadge(unreadCount).catch(() => {})
+    } else if (unreadCount === 0 && typeof nav.clearAppBadge === 'function') {
+      void nav.clearAppBadge().catch(() => {})
+    }
+
+    // 3. Draw dynamic 64x64 Canvas icon with red unread badge dot/count
+    const canvas = document.createElement('canvas')
+    canvas.width = 64
+    canvas.height = 64
+    const ctx = canvas.getContext('2d')
+    if (!ctx) return
+
+    // Base terracotta rounded square (#cc785c)
+    ctx.fillStyle = '#cc785c'
+    ctx.beginPath()
+    ctx.roundRect(4, 4, 56, 56, 14)
+    ctx.fill()
+
+    // Inner subtle glyph ("C")
+    ctx.fillStyle = '#ffffff'
+    ctx.font = 'bold 34px sans-serif'
+    ctx.textAlign = 'center'
+    ctx.textBaseline = 'middle'
+    ctx.fillText('C', 32, 34)
+
+    // If unread reminders exist, draw a prominent red notification badge in top-right corner
+    if (unreadCount > 0) {
+      const badgeRadius = 15
+      const cx = 48
+      const cy = 16
+
+      // Dark outer ring for contrast
+      ctx.fillStyle = '#141413'
+      ctx.beginPath()
+      ctx.arc(cx, cy, badgeRadius + 3, 0, Math.PI * 2)
+      ctx.fill()
+
+      // Bright red badge circle
+      ctx.fillStyle = '#ef4444'
+      ctx.beginPath()
+      ctx.arc(cx, cy, badgeRadius, 0, Math.PI * 2)
+      ctx.fill()
+
+      // Badge count number
+      const label = unreadCount > 9 ? '9+' : String(unreadCount)
+      ctx.fillStyle = '#ffffff'
+      ctx.font = 'bold 18px sans-serif'
+      ctx.textAlign = 'center'
+      ctx.textBaseline = 'middle'
+      ctx.fillText(label, cx, cy + 1)
+    }
+
+    const dataUrl = canvas.toDataURL('image/png')
+    let link = document.querySelector<HTMLLinkElement>("link[rel*='icon']")
+    if (!link) {
+      link = document.createElement('link')
+      link.rel = 'icon'
+      document.head.appendChild(link)
+    }
+    link.type = 'image/png'
+    link.href = dataUrl
+  } catch {
+    // Ignore canvas/DOM errors
+  }
+}
+
+/**
  * Plays a pleasant two-tone notification chime using the Web Audio API.
  */
 export function playNotificationChime(): void {
   try {
-    const AudioCtx = window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext
+    const AudioCtx =
+      window.AudioContext ||
+      (window as unknown as { webkitAudioContext: typeof AudioContext })
+        .webkitAudioContext
     if (!AudioCtx) return
     const ctx = new AudioCtx()
     const now = ctx.currentTime
@@ -67,9 +156,11 @@ export function playNotificationChime(): void {
 }
 
 /**
- * Fires a native desktop OS notification via Web Notification API + local backend Windows Toast fallback.
+ * Fires a native desktop OS notification + flashes the Windows Taskbar icon until clicked.
  */
-export async function fireNativeDesktopNotification(ping: DesktopReminderPing): Promise<void> {
+export async function fireNativeDesktopNotification(
+  ping: DesktopReminderPing
+): Promise<void> {
   playNotificationChime()
 
   // 1. Browser / App-window native Notification API
@@ -89,7 +180,7 @@ export async function fireNativeDesktopNotification(ping: DesktopReminderPing): 
     }
   }
 
-  // 2. Local FastAPI Windows Toast helper (if available)
+  // 2. Local FastAPI Windows Toast + Taskbar Flash (FLASHW_TIMERNOFG highlights taskbar icon until clicked)
   try {
     await fetch(`${API_BASE}/api/notify`, {
       method: 'POST',
@@ -131,7 +222,10 @@ export function detectNewReminderPings(
         continue
       }
 
-      if (!notifiedIds.has(r.id) || (prevStatus === 'PENDING' && r.status === 'DELIVERED')) {
+      if (
+        !notifiedIds.has(r.id) ||
+        (prevStatus === 'PENDING' && r.status === 'DELIVERED')
+      ) {
         notifiedIds.add(r.id)
         newPings.push({
           id: `${r.id}-${Date.now()}`,

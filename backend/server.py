@@ -92,10 +92,57 @@ class DesktopNotifyPayload(BaseModel):
     message: str
 
 
+def _flash_careeros_taskbar_window() -> None:
+    """Flash/highlight the CareerOS window on the Windows Taskbar until the user clicks into it."""
+    if os.name != "nt":
+        return
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        user32 = ctypes.windll.user32
+
+        class FLASHWINFO(ctypes.Structure):
+            _fields_ = [
+                ("cbSize", wintypes.UINT),
+                ("hwnd", wintypes.HWND),
+                ("dwFlags", wintypes.DWORD),
+                ("uCount", wintypes.UINT),
+                ("dwTimeout", wintypes.DWORD),
+            ]
+
+        WNDENUMPROC = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+        FLASHW_ALL = 0x00000003
+        FLASHW_TIMERNOFG = 0x0000000C
+
+        def callback(hwnd, _lparam):
+            if user32.IsWindowVisible(hwnd):
+                length = user32.GetWindowTextLengthW(hwnd)
+                if length > 0:
+                    buf = ctypes.create_unicode_buffer(length + 1)
+                    user32.GetWindowTextW(hwnd, buf, length + 1)
+                    if "CareerOS" in buf.value:
+                        info = FLASHWINFO(
+                            ctypes.sizeof(FLASHWINFO),
+                            hwnd,
+                            FLASHW_ALL | FLASHW_TIMERNOFG,
+                            0,
+                            0,
+                        )
+                        user32.FlashWindowEx(ctypes.byref(info))
+            return True
+
+        user32.EnumWindows(WNDENUMPROC(callback), 0)
+    except Exception:
+        pass
+
+
 @app.post("/api/notify")
 def api_notify(payload: DesktopNotifyPayload) -> dict[str, bool]:
     import subprocess
     import xml.sax.saxutils as saxutils
+
+    _flash_careeros_taskbar_window()
 
     safe_title = saxutils.escape(payload.title).replace("'", "''")
     safe_msg = saxutils.escape(payload.message).replace("'", "''")

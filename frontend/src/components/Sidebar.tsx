@@ -29,6 +29,7 @@ interface SidebarProps {
   onRefreshReminders?: () => void
   isRefreshingReminders?: boolean
   lastSyncedAt?: string | null
+  unreadPingCount?: number
   systemStatus?: SystemStatus | null
   isMobileOpen?: boolean
   onCloseMobile?: () => void
@@ -41,6 +42,7 @@ export function Sidebar({
   onRefreshReminders,
   isRefreshingReminders = false,
   lastSyncedAt,
+  unreadPingCount = 0,
   systemStatus,
   isMobileOpen = false,
   onCloseMobile,
@@ -84,10 +86,14 @@ export function Sidebar({
         {/* Top Header: Terracotta rounded square + CareerOS title + Refresh & '+' buttons */}
         <div className="flex items-center justify-between px-5 pt-6 pb-2">
           <div className="flex items-center gap-3">
-            <div
-              className="w-9 h-9 rounded-xl bg-[#cc785c] shrink-0 shadow-sm"
-              aria-hidden="true"
-            />
+            <div className="relative shrink-0" aria-hidden="true">
+              <div className="w-9 h-9 rounded-xl bg-[#cc785c] shadow-sm" />
+              {unreadPingCount > 0 && (
+                <span className="absolute -top-1.5 -right-1.5 min-w-5 h-5 px-1 rounded-full bg-red-500 border-2 border-[#1b1a18] text-[10px] font-bold text-white flex items-center justify-center shadow-md animate-bounce">
+                  {unreadPingCount > 9 ? '9+' : unreadPingCount}
+                </span>
+              )}
+            </div>
             <span className="text-lg font-semibold tracking-tight text-white">
               CareerOS
             </span>
