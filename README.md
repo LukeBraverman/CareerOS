@@ -26,6 +26,22 @@
   - Rename speaker labels (e.g. `SPEAKER_00` → `Luke`) inline and automatically update the entire transcript and `.transcript.txt` file.
   - One-click **Copy Transcript**, **Copy AI Analysis Prompt** (ready for Notion + AI meeting analysis), and **Download `.transcript.txt`**.
 
+### 4. Install & Setup (`Install`)
+- **Automated Laptop Dependency Scanner**: Scans the machine for all 8 required tools & Hugging Face models (`ffmpeg`, `yt-dlp`, `aws`, `node`, Python AI packages, `HF_TOKEN`, `faster-whisper` weights, and `pyannote/speaker-diarization-3.1` weights).
+- **One-Click Installer & Hugging Face Token Setup**: Enter your `hf_...` token directly in the UI and install missing CLI tools or pre-download/verify Hugging Face models with live streaming terminal logs.
+
+---
+
+## Initial Laptop Setup (`setup.bat` / `setup.ps1`)
+
+On a new laptop, double-click **`setup.bat`** (or run `.\setup.ps1` in PowerShell):
+
+```powershell
+.\setup.bat
+```
+
+This automatically installs missing system tools (`ffmpeg`, `yt-dlp`, `aws`, `node`), prompts for your Hugging Face Read Token (`hf_...`), installs Python dependencies, pre-downloads & verifies the Whisper and PyAnnote models from Hugging Face (`backend/verify_models.py`), and builds the React frontend.
+
 ---
 
 ## Quick Launch (Windows Desktop)
