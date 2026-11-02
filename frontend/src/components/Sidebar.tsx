@@ -11,6 +11,7 @@ import {
   CheckCircle2,
   AlertTriangle,
   RefreshCw,
+  Download,
 } from 'lucide-react'
 import type { SystemStatus } from '@/types/voiceNote'
 
@@ -21,6 +22,7 @@ export type NavTab =
   | 'culture'
   | 'videos'
   | 'voice-notes'
+  | 'install'
 
 interface SidebarProps {
   activeTab: NavTab
@@ -78,7 +80,13 @@ export function Sidebar({
       label: 'Voice Notes',
       icon: Mic,
     },
+    {
+      id: 'install' as const,
+      label: 'Install',
+      icon: Download,
+    },
   ]
+
 
   const content = (
     <div className="h-full flex flex-col justify-between bg-[#1b1a18] text-[#f0ede6] select-none">

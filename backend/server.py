@@ -87,6 +87,391 @@ def api_active_job() -> dict[str, Any]:
     return {"activeJob": _ACTIVE_JOB}
 
 
+def _save_hf_token_to_env(token: str) -> Path:
+    clean_token = token.strip().strip('"').strip("'")
+    env_path = BASE_DIR / ".env"
+    lines: list[str] = []
+    found_token = False
+    found_port = False
+    if env_path.exists():
+        for raw_line in env_path.read_text(encoding="utf-8-sig").splitlines():
+            stripped = raw_line.strip()
+            if stripped.startswith("HF_TOKEN="):
+                lines.append(f"HF_TOKEN={clean_token}")
+                found_token = True
+            elif stripped.startswith("CAREEROS_PORT="):
+                lines.append(raw_line)
+                found_port = True
+            else:
+                lines.append(raw_line)
+    if not found_token:
+        lines.insert(0, f"HF_TOKEN={clean_token}")
+    if not found_port:
+        lines.append("CAREEROS_PORT=8420")
+    env_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    os.environ["HF_TOKEN"] = clean_token
+    return env_path
+
+
+def _scan_laptop_tools() -> dict[str, Any]:
+    import importlib.metadata
+    import subprocess
+    import sys
+    from transcriber import load_env_token
+
+    yt_dlp_path, ffmpeg_path, _ffprobe_path = _resolve_video_tools()
+
+    # 1. FFmpeg
+    ffmpeg_exists = bool(shutil.which(ffmpeg_path) or Path(ffmpeg_path).exists())
+    ffmpeg_version = "Not installed"
+    ffmpeg_resolved = shutil.which(ffmpeg_path) or (ffmpeg_path if Path(ffmpeg_path).exists() else "")
+    if ffmpeg_exists:
+        try:
+            p = subprocess.run([ffmpeg_resolved, "-version"], capture_output=True, text=True, encoding="utf-8", timeout=5)
+            first_line = (p.stdout or "").splitlines()[0] if p.stdout else "Installed"
+            ffmpeg_version = first_line.replace("Copyright (c)", "-").split("-")[0].strip()
+        except Exception:
+            ffmpeg_version = "Installed"
+
+    # 2. yt-dlp
+    yt_dlp_exists = bool(shutil.which(yt_dlp_path) or Path(yt_dlp_path).exists())
+    yt_dlp_version = "Not installed"
+    yt_dlp_resolved = shutil.which(yt_dlp_path) or (yt_dlp_path if Path(yt_dlp_path).exists() else "")
+    if yt_dlp_exists:
+        try:
+            p = subprocess.run([yt_dlp_resolved, "--version"], capture_output=True, text=True, encoding="utf-8", timeout=5)
+            yt_dlp_version = f"v{(p.stdout or '').strip()}"
+        except Exception:
+            yt_dlp_version = "Installed"
+
+    # 3. AWS CLI
+    aws_resolved = shutil.which("aws") or ""
+    aws_exists = bool(aws_resolved)
+    aws_version = "Not installed"
+    if aws_exists:
+        try:
+            p = subprocess.run([aws_resolved, "--version"], capture_output=True, text=True, encoding="utf-8", timeout=5)
+            aws_version = ((p.stdout or p.stderr or "").strip().split()[0]) or "Installed"
+        except Exception:
+            aws_version = "Installed"
+
+    # 4. Node.js & npm
+    node_resolved = shutil.which("node") or ""
+    node_exists = bool(node_resolved)
+    node_version = "Not installed"
+    if node_exists:
+        try:
+            p = subprocess.run([node_resolved, "--version"], capture_output=True, text=True, encoding="utf-8", timeout=5)
+            node_version = (p.stdout or "").strip() or "Installed"
+        except Exception:
+            node_version = "Installed"
+
+    # 5. Python AI Packages
+    req_pkgs = ["faster-whisper", "pyannote.audio", "torch", "soundfile", "fastapi"]
+    pkg_versions: list[str] = []
+    missing_pkgs: list[str] = []
+    for pkg in req_pkgs:
+        try:
+            ver = importlib.metadata.version(pkg)
+            pkg_versions.append(f"{pkg}=={ver}")
+        except Exception:
+            missing_pkgs.append(pkg)
+    python_ai_installed = len(missing_pkgs) == 0
+    python_ai_version = (
+        ", ".join(pkg_versions[:3])
+        if python_ai_installed
+        else f"Missing: {', '.join(missing_pkgs)}"
+    )
+
+    # 6. Hugging Face Token
+    token = (load_env_token() or "").strip()
+    token_configured = len(token) > 5
+    masked_token = (
+        f"{token[:5]}…{token[-4:]}" if len(token) > 10 else ("Configured" if token_configured else "Not configured")
+    )
+    env_file_path = str(BASE_DIR / ".env")
+
+    # 7 & 8. Hugging Face Model Cache on Laptop
+    hf_hub_dir = Path(os.environ.get("HF_HOME", Path.home() / ".cache" / "huggingface")) / "hub"
+    whisper_dir = hf_hub_dir / "models--Systran--faster-whisper-base" / "snapshots"
+    whisper_cached = whisper_dir.exists() and any(whisper_dir.iterdir())
+
+    pyannote_dir = hf_hub_dir / "models--pyannote--speaker-diarization-3.1" / "snapshots"
+    seg_dir = hf_hub_dir / "models--pyannote--segmentation-3.0" / "snapshots"
+    pyannote_cached = (
+        pyannote_dir.exists()
+        and any(pyannote_dir.iterdir())
+        and seg_dir.exists()
+        and any(seg_dir.iterdir())
+    )
+
+    items = [
+        {
+            "id": "ffmpeg",
+            "name": "FFmpeg & FFprobe",
+            "category": "System Tool",
+            "installed": ffmpeg_exists,
+            "version": ffmpeg_version,
+            "path": ffmpeg_resolved or "Not found on PATH",
+            "description": "Required for Voice Notes 16kHz WAV conversion and Videos MP4/thumbnail processing.",
+        },
+        {
+            "id": "yt_dlp",
+            "name": "yt-dlp Video Downloader",
+            "category": "System Tool",
+            "installed": yt_dlp_exists,
+            "version": yt_dlp_version,
+            "path": yt_dlp_resolved or "Not found on PATH",
+            "description": "Required for downloading videos from YouTube, LinkedIn, etc. in the Videos tab.",
+        },
+        {
+            "id": "aws_cli",
+            "name": "AWS CLI (S3 Storage Sync)",
+            "category": "System Tool",
+            "installed": aws_exists,
+            "version": aws_version,
+            "path": aws_resolved or "Not found on PATH",
+            "description": "Required for uploading & deleting motivational videos and manifest.json in S3.",
+        },
+        {
+            "id": "node_npm",
+            "name": "Node.js & npm Runtime",
+            "category": "System Tool",
+            "installed": node_exists,
+            "version": node_version,
+            "path": node_resolved or "Not found on PATH",
+            "description": "Required for building the CareerOS React 19 + TypeScript desktop interface.",
+        },
+        {
+            "id": "python_ai",
+            "name": "Python AI Engine (faster-whisper + pyannote + PyTorch)",
+            "category": "Python Packages",
+            "installed": python_ai_installed,
+            "version": python_ai_version,
+            "path": sys.executable,
+            "description": "Core Python virtual environment packages for offline AI transcription and FastAPI.",
+        },
+        {
+            "id": "hf_token",
+            "name": "Hugging Face Read Token (HF_TOKEN)",
+            "category": "Hugging Face",
+            "installed": token_configured,
+            "version": masked_token,
+            "path": env_file_path,
+            "description": "Authenticates with Hugging Face Hub to download gated PyAnnote speaker diarization models.",
+        },
+        {
+            "id": "whisper_model",
+            "name": "Faster-Whisper Model (Systran/faster-whisper-base)",
+            "category": "Hugging Face",
+            "installed": whisper_cached,
+            "version": "Cached locally (int8/float16)" if whisper_cached else "Not downloaded",
+            "path": str(whisper_dir.parent) if whisper_cached else str(hf_hub_dir),
+            "description": "Offline speech-to-text neural network weights from Hugging Face.",
+        },
+        {
+            "id": "pyannote_model",
+            "name": "PyAnnote Speaker Diarization 3.1 (Hugging Face)",
+            "category": "Hugging Face",
+            "installed": pyannote_cached,
+            "version": "Cached locally (3.1 + segmentation-3.0)" if pyannote_cached else "Not downloaded",
+            "path": str(pyannote_dir.parent) if pyannote_cached else str(hf_hub_dir),
+            "description": "Offline speaker detection & segmentation weights from Hugging Face.",
+        },
+    ]
+
+    installed_count = sum(1 for item in items if item["installed"])
+    return {
+        "allInstalled": installed_count == len(items),
+        "installedCount": installed_count,
+        "totalCount": len(items),
+        "hfTokenConfigured": token_configured,
+        "hfTokenMasked": masked_token,
+        "setupScriptPath": str(BASE_DIR / "setup.ps1"),
+        "items": items,
+    }
+
+
+@app.get("/api/install/scan")
+def api_install_scan() -> dict[str, Any]:
+    return _scan_laptop_tools()
+
+
+class SaveTokenPayload(BaseModel):
+    hfToken: str
+
+
+@app.post("/api/install/token")
+def api_install_save_token(payload: SaveTokenPayload) -> dict[str, Any]:
+    raw = payload.hfToken.strip()
+    if not raw or len(raw) < 6:
+        raise HTTPException(status_code=400, detail="Please enter a valid Hugging Face Read Token (hf_...)")
+    env_path = _save_hf_token_to_env(raw)
+    return {
+        "saved": True,
+        "envPath": str(env_path),
+        "scan": _scan_laptop_tools(),
+    }
+
+
+class RunInstallPayload(BaseModel):
+    hfToken: str | None = None
+    targetId: str | None = None
+    forceVerifyModels: bool = False
+
+
+@app.post("/api/install/run")
+async def api_install_run(payload: RunInstallPayload):
+    import subprocess
+    import sys
+    from verify_models import verify_and_download_models
+
+    event_queue: queue.Queue[dict[str, Any] | None] = queue.Queue()
+
+    def emit(stage: str, percent: int, message: str):
+        event_queue.put({"type": "progress", "stage": stage, "percent": percent, "message": message})
+
+    def worker():
+        try:
+            emit("scanning", 5, "Scanning laptop environment and dependencies...")
+            if payload.hfToken and payload.hfToken.strip():
+                env_path = _save_hf_token_to_env(payload.hfToken.strip())
+                emit("token", 12, f"Saved Hugging Face token (HF_TOKEN) to {env_path.name}")
+
+            scan = _scan_laptop_tools()
+            items_by_id = {item["id"]: item for item in scan["items"]}
+            target = (payload.targetId or "all").strip()
+
+            # 1. Winget system tools if missing or explicitly targeted
+            winget_map = [
+                ("ffmpeg", "Gyan.FFmpeg", "FFmpeg & FFprobe"),
+                ("yt_dlp", "yt-dlp.yt-dlp", "yt-dlp Video Downloader"),
+                ("aws_cli", "Amazon.AWSCLI", "AWS CLI"),
+                ("node_npm", "OpenJS.NodeJS.LTS", "Node.js & npm"),
+            ]
+            for idx, (tool_id, winget_id, label) in enumerate(winget_map):
+                if target not in ("all", tool_id):
+                    continue
+                is_installed = items_by_id.get(tool_id, {}).get("installed", False)
+                if is_installed and target == "all":
+                    emit("tools", 15 + idx * 5, f"[OK] {label} already installed ({items_by_id[tool_id]['version']})")
+                    continue
+
+                emit("tools", 15 + idx * 5, f"Installing {label} via winget ({winget_id})...")
+                if shutil.which("winget"):
+                    proc = subprocess.run(
+                        [
+                            "winget",
+                            "install",
+                            "--id",
+                            winget_id,
+                            "-e",
+                            "--accept-source-agreements",
+                            "--accept-package-agreements",
+                        ],
+                        capture_output=True,
+                        text=True,
+                        encoding="utf-8",
+                        timeout=300,
+                    )
+                    if proc.returncode == 0:
+                        emit("tools", 18 + idx * 5, f"[OK] {label} installed successfully.")
+                    elif tool_id == "yt_dlp":
+                        emit("tools", 18 + idx * 5, "Installing yt-dlp via pip fallback...")
+                        subprocess.run(
+                            [sys.executable, "-m", "pip", "install", "-U", "yt-dlp"],
+                            capture_output=True,
+                            text=True,
+                            timeout=120,
+                        )
+                        emit("tools", 19 + idx * 5, "[OK] yt-dlp installed via pip.")
+                    else:
+                        err_line = (proc.stderr or proc.stdout or "winget returned non-zero").strip().splitlines()[-1]
+                        emit("tools", 18 + idx * 5, f"[WARN] winget {label}: {err_line}")
+                elif tool_id == "yt_dlp":
+                    subprocess.run(
+                        [sys.executable, "-m", "pip", "install", "-U", "yt-dlp"],
+                        capture_output=True,
+                        text=True,
+                        timeout=120,
+                    )
+                    emit("tools", 19 + idx * 5, "[OK] yt-dlp installed via pip.")
+
+            # 2. Python packages
+            if target in ("all", "python_ai"):
+                py_installed = items_by_id.get("python_ai", {}).get("installed", False)
+                if not py_installed or target == "python_ai":
+                    req_file = BASE_DIR / "requirements.txt"
+                    emit("python", 45, f"Installing Python dependencies from {req_file.name}...")
+                    proc = subprocess.run(
+                        [sys.executable, "-m", "pip", "install", "-r", str(req_file)],
+                        capture_output=True,
+                        text=True,
+                        encoding="utf-8",
+                        timeout=600,
+                    )
+                    if proc.returncode != 0:
+                        err_msg = (proc.stderr or proc.stdout or "pip install failed").strip().splitlines()[-1]
+                        raise RuntimeError(f"pip install failed: {err_msg}")
+                    emit("python", 60, "[OK] Python AI packages installed and verified.")
+                else:
+                    emit("python", 55, f"[OK] Python AI packages already installed ({items_by_id['python_ai']['version']})")
+
+            # 3. Hugging Face Models (Faster-Whisper + PyAnnote 3.1)
+            need_hf_models = (
+                payload.forceVerifyModels
+                or target in ("whisper_model", "pyannote_model", "hf_token")
+                or (
+                    target == "all"
+                    and (
+                        not items_by_id.get("whisper_model", {}).get("installed", False)
+                        or not items_by_id.get("pyannote_model", {}).get("installed", False)
+                    )
+                )
+            )
+            if need_hf_models:
+                emit("huggingface", 68, "Connecting to Hugging Face to download & verify Whisper + PyAnnote models...")
+                verify_and_download_models(
+                    model_size="base",
+                    token=(payload.hfToken or "").strip() or None,
+                    log_fn=lambda msg: emit("huggingface", 82, msg),
+                )
+            elif target == "all":
+                emit("huggingface", 85, "[OK] Faster-Whisper & PyAnnote 3.1 Hugging Face models are already cached on disk.")
+
+            updated_scan = _scan_laptop_tools()
+            emit("complete", 100, "All checks and installations complete!")
+            event_queue.put({"type": "result", "scan": updated_scan})
+        except Exception as exc:
+            event_queue.put({"type": "error", "message": str(exc), "scan": _scan_laptop_tools()})
+        finally:
+            event_queue.put(None)
+
+    threading.Thread(target=worker, daemon=True).start()
+
+    async def event_generator():
+        while True:
+            try:
+                item = await asyncio.to_thread(event_queue.get, True, 0.5)
+            except queue.Empty:
+                yield ": keep-alive\n\n"
+                continue
+            if item is None:
+                break
+            yield f"data: {json.dumps(item, ensure_ascii=False)}\n\n"
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
+
 _VIDEOS_BUCKET = "meinc-motivation-videos-027939434555"
 _VIDEOS_REGION = "eu-west-2"
 _VIDEOS_MANIFEST_URL = f"https://{_VIDEOS_BUCKET}.s3.{_VIDEOS_REGION}.amazonaws.com/manifest.json"

@@ -40,8 +40,22 @@ def load_env_token() -> str | None:
                 line = line.strip()
                 if line and not line.startswith("#") and "=" in line:
                     k, v = line.split("=", 1)
-                    os.environ.setdefault(k.strip(), v.strip().strip('"').strip("'"))
+                    val = v.strip().strip('"').strip("'")
+                    if k.strip() == "HF_TOKEN" and val:
+                        os.environ["HF_TOKEN"] = val
+                    else:
+                        os.environ.setdefault(k.strip(), val)
     return os.environ.get("HF_TOKEN")
+
+
+def resolve_ffmpeg_exe() -> str | None:
+    found = shutil.which("ffmpeg")
+    if found:
+        return found
+    fallback = Path(r"C:\Users\User\Documents\SOVHQDawnload\ffmpeg-7.1.1-essentials_build\ffmpeg-7.1.1-essentials_build\bin\ffmpeg.exe")
+    if fallback.exists():
+        return str(fallback)
+    return None
 
 
 def get_optimal_devices() -> tuple[torch.device, str, str]:
@@ -70,7 +84,7 @@ def get_system_status() -> dict[str, Any]:
     """Return hardware, FFmpeg, and HF token readiness for the CareerOS status bar."""
     token = load_env_token()
     pyannote_dev, whisper_dev, whisper_comp = get_optimal_devices()
-    ffmpeg_path = shutil.which("ffmpeg")
+    ffmpeg_path = resolve_ffmpeg_exe()
     return {
         "platform": f"{platform.system()} ({platform.machine()})",
         "pyannoteDevice": str(pyannote_dev),
@@ -95,9 +109,10 @@ def format_timestamp(seconds: float) -> str:
 
 def convert_to_wav(input_path: Path) -> Path:
     """Convert any audio/video format (.m4a, .mp3, .aac, .wav, .mp4, .ogg, .flac, .webm) to 16kHz mono WAV via FFmpeg."""
+    ffmpeg_exe = resolve_ffmpeg_exe() or "ffmpeg"
     temp_wav = Path(tempfile.gettempdir()) / f"careeros_vn_{os.getpid()}_{int(time.time() * 1000)}_{input_path.stem}.wav"
     cmd = [
-        "ffmpeg", "-y", "-i", str(input_path),
+        ffmpeg_exe, "-y", "-i", str(input_path),
         "-ar", "16000", "-ac", "1", "-c:a", "pcm_s16le",
         str(temp_wav),
     ]
@@ -105,6 +120,7 @@ def convert_to_wav(input_path: Path) -> Path:
     if res.returncode != 0:
         raise RuntimeError(f"FFmpeg audio conversion failed: {res.stderr.strip()}")
     return temp_wav
+
 
 
 def load_waveform_tensor(wav_path: Path) -> tuple[torch.Tensor, int, float]:

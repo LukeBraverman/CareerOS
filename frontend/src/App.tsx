@@ -6,6 +6,7 @@ import { TravelView } from '@/components/TravelView'
 import { CultureView } from '@/components/CultureView'
 import { VideosView } from '@/components/VideosView'
 import { VoiceNotesView } from '@/components/VoiceNotesView'
+import { InstallView } from '@/components/InstallView'
 import { CreateReminderModal } from '@/components/CreateReminderModal'
 import { DesktopNotificationToasts } from '@/components/DesktopNotificationToasts'
 import { type TodayReminder } from '@/types/reminder'
@@ -200,8 +201,14 @@ export function App() {
           {activeTab === 'voice-notes' && (
             <VoiceNotesView onStatusRefresh={refreshStatus} />
           )}
+
+          {/* TAB 7: INSTALL & SETUP VIEW */}
+          {activeTab === 'install' && (
+            <InstallView onStatusRefresh={refreshStatus} />
+          )}
         </main>
       </div>
+
 
       {/* Create Reminder Modal */}
       <CreateReminderModal
