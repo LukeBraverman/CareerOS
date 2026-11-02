@@ -79,9 +79,22 @@ export function VoiceNotesView({ onStatusRefresh }: VoiceNotesViewProps) {
   const [speakerDrafts, setSpeakerDrafts] = useState<Record<string, string>>({})
   const [isSavingSpeakers, setIsSavingSpeakers] = useState(false)
   const [currentAudioTime, setCurrentAudioTime] = useState(0)
+  const [liveElapsed, setLiveElapsed] = useState(0)
 
   const fileInputRef = useRef<HTMLInputElement | null>(null)
   const audioRef = useRef<HTMLAudioElement | null>(null)
+
+  useEffect(() => {
+    if (!isTranscribing) {
+      setLiveElapsed(0)
+      return
+    }
+    const startMs = Date.now()
+    const timer = window.setInterval(() => {
+      setLiveElapsed(Math.round((Date.now() - startMs) / 100) / 10)
+    }, 500)
+    return () => window.clearInterval(timer)
+  }, [isTranscribing])
 
   useEffect(() => {
     let mounted = true
@@ -369,7 +382,7 @@ export function VoiceNotesView({ onStatusRefresh }: VoiceNotesViewProps) {
                   {progress.percent}%
                 </span>
                 <span className="block text-[11px] font-mono text-[#8e8c87]">
-                  {progress.elapsedSeconds.toFixed(1)}s elapsed
+                  {Math.max(liveElapsed, progress.elapsedSeconds).toFixed(1)}s elapsed
                 </span>
               </div>
             </div>
