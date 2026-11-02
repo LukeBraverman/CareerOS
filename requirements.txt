@@ -1,0 +1,8 @@
+faster-whisper>=1.1.0
+pyannote.audio>=3.3.0
+soundfile>=0.12.1
+av<14
+python-dotenv>=1.0.0
+fastapi>=0.110.0
+uvicorn>=0.29.0
+python-multipart>=0.0.9
